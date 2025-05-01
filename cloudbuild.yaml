@@ -1,0 +1,107 @@
+steps:
+# Install dependencies
+- name: 'golang:1.20'
+  id: 'go-dependencies'
+  entrypoint: 'go'
+  args: ['mod', 'download']
+  
+# Run linting
+- name: 'golangci/golangci-lint:v1.54-alpine'
+  id: 'lint'
+  args: ['golangci-lint', 'run', '-v', './...']
+  
+# Run tests with coverage report
+- name: 'golang:1.20'
+  id: 'test'
+  entrypoint: 'go'
+  args: ['test', '-v', '-race', '-coverprofile=coverage.txt', '-covermode=atomic', './...']
+  
+# Build the application
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'build-image'
+  args: [
+    'build',
+    '-t', '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:${COMMIT_SHA}',
+    '-t', '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:latest',
+    '.'
+  ]
+  
+# Push the image to Artifact Registry
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'push-image'
+  args: ['push', '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:${COMMIT_SHA}']
+  
+# Push latest tag
+- name: 'gcr.io/cloud-builders/docker'
+  id: 'push-latest'
+  args: ['push', '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:latest']
+
+# Deploy to Cloud Run (for dev/staging environments)
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  id: 'deploy-cloud-run'
+  entrypoint: 'gcloud'
+  args: [
+    'run', 'deploy', '${_SERVICE_NAME}',
+    '--image', '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:${COMMIT_SHA}',
+    '--region', '${_REGION}',
+    '--platform', 'managed',
+    '--allow-unauthenticated'
+  ]
+  
+# Optionally render Helm chart for GKE deployment
+- name: 'alpine/helm:3.12.0'
+  id: 'render-helm-chart'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      if [ "${_DEPLOY_TO_GKE}" = "true" ]; then
+        helm template ./helm/${_SERVICE_NAME} \
+          --set image.repository=${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME} \
+          --set image.tag=${COMMIT_SHA} \
+          --set env=${_ENVIRONMENT} \
+          > k8s-manifest.yaml
+      fi
+
+# Conditionally deploy to GKE
+- name: 'gcr.io/cloud-builders/kubectl'
+  id: 'deploy-to-gke'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      if [ "${_DEPLOY_TO_GKE}" = "true" ]; then
+        gcloud container clusters get-credentials ${_GKE_CLUSTER} --region ${_REGION}
+        kubectl apply -f k8s-manifest.yaml
+      fi
+
+# Notify of deployment completion
+- name: 'gcr.io/cloud-builders/curl'
+  id: 'notify'
+  entrypoint: 'sh'
+  args:
+    - '-c'
+    - |
+      echo "Build completed: ${BUILD_ID}"
+      # Add notification to webhook, Slack, etc. if needed
+
+# Set timeout for the entire build
+timeout: '1800s'
+
+# Define the images to be stored in Artifact Registry
+images:
+- '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:${COMMIT_SHA}'
+- '${_ARTIFACT_REGISTRY_URL}/${PROJECT_ID}/${_SERVICE_NAME}:latest'
+
+# Define substitution variables with defaults
+substitutions:
+  _SERVICE_NAME: 'untie-code'
+  _REGION: 'us-central1'
+  _ARTIFACT_REGISTRY_URL: 'us-central1-docker.pkg.dev'
+  _ENVIRONMENT: 'development'
+  _DEPLOY_TO_GKE: 'false'
+  _GKE_CLUSTER: 'untie-gke-cluster'
+
+# Define options
+options:
+  logging: CLOUD_LOGGING_ONLY

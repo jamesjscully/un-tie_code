@@ -1,0 +1,20 @@
+version: '3'
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+    environment:
+      - ENV=development
+      - PORT=8080
+      - JWT_SECRET=dev-secret
+      - FEATURE_ARCHITECTURE_CANVAS=true
+      - FEATURE_STORY_FLOW=true
+      - FEATURE_TASK_HUB=true
+      - FEATURE_REVIEW_QUEUE=true
+      - FEATURE_DESIGN_ASSISTANT=true
+    restart: unless-stopped
