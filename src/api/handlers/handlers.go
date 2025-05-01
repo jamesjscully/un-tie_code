@@ -26,15 +26,13 @@ func NewHandler(projectService models.ProjectService, authService models.AuthSer
 
 // HomeHandler renders the main dashboard page
 func (h *Handler) HomeHandler(c *gin.Context) {
-	// Get list of recent projects for the dashboard
-	// Using a consistent trace ID for better traceability
 	traceID, _ := c.Get("traceID")
-	userID := "test-user" // Placeholder, will be from auth session
+	user := h.getCurrentUser(c)
 	
 	var recentProjects []map[string]interface{}
 	
 	// Try to get some projects if they exist, with proper error handling
-	projects, err := h.projectService.ListProjects(userID)
+	projects, err := h.projectService.ListProjects(user.ID)
 	if err != nil {
 		// Log the error but continue - fail gracefully
 		fmt.Printf("[%s] Error getting projects for homepage: %v\n", traceID, err)
@@ -77,11 +75,9 @@ func (h *Handler) NewProjectForm(c *gin.Context) {
 func (h *Handler) ListProjects(c *gin.Context) {
 	// Get trace ID for request tracing
 	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
-	// TODO: Get user ID from authenticated session
-	userID := "test-user" // Placeholder
-	
-	projects, err := h.projectService.ListProjects(userID)
+	projects, err := h.projectService.ListProjects(user.ID)
 	if err != nil {
 		fmt.Printf("[%s] Error listing projects: %v\n", traceID, err)
 		c.HTML(http.StatusInternalServerError, "base", gin.H{
@@ -136,220 +132,207 @@ func (h *Handler) GetProject(c *gin.Context) {
 // CreateProject handles the creation of a new project
 func (h *Handler) CreateProject(c *gin.Context) {
 	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	// Parse form data
 	name := c.PostForm("name")
 	description := c.PostForm("description")
 	
-	// TODO: Get user ID from authenticated session
-	userID := "test-user" // Placeholder
-	
-	// Basic validation
 	if name == "" {
+		fmt.Printf("[%s] Project creation failed: missing name\n", traceID)
 		c.HTML(http.StatusBadRequest, "base", gin.H{
-			"title":       "Create New Project",
-			"error":       "Project name is required",
-			"description": description, // Return entered data
+			"title": "Create Project - Error",
+			"error": "Project name is required",
 		})
 		return
 	}
 	
-	// Create project
-	project := models.NewProject(name, description, userID)
+	project := models.NewProject(name, description, user.ID)
 	
 	err := h.projectService.CreateProject(project)
 	if err != nil {
-		fmt.Printf("[%s] Error creating project: %v\n", traceID, err)
+		fmt.Printf("[%s] Project creation failed: %v\n", traceID, err)
 		c.HTML(http.StatusInternalServerError, "base", gin.H{
-			"title": "Error",
+			"title": "Create Project - Error",
 			"error": "Failed to create project",
 		})
 		return
 	}
 	
-	// Redirect to project page
-	c.Redirect(http.StatusSeeOther, fmt.Sprintf("/projects/%s", project.ID))
+	c.Redirect(http.StatusSeeOther, "/projects/"+project.ID)
 }
 
 // UpdateProject handles updates to an existing project
 func (h *Handler) UpdateProject(c *gin.Context) {
 	traceID, _ := c.Get("traceID")
 	id := c.Param("id")
+	user := h.getCurrentUser(c)
 	
-	// Get existing project
+	// Parse form data
+	name := c.PostForm("name")
+	description := c.PostForm("description")
+	
+	// Get current project
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
-		fmt.Printf("[%s] Error getting project for update %s: %v\n", traceID, id, err)
-		c.JSON(http.StatusNotFound, gin.H{
-			"status": "error",
-			"error":  "Project not found",
+		fmt.Printf("[%s] Error getting project %s for update: %v\n", traceID, id, err)
+		c.HTML(http.StatusNotFound, "base", gin.H{
+			"title": "Project Not Found",
+			"error": "The requested project could not be found",
 		})
 		return
 	}
 	
-	// Parse update data
-	var updateData struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-	}
-	
-	if err := c.BindJSON(&updateData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"status": "error",
-			"error":  "Invalid data format",
+	// Verify ownership
+	if project.UserID != user.ID {
+		fmt.Printf("[%s] Unauthorized update attempt on project %s by user %s\n", traceID, id, user.ID)
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to update this project",
 		})
 		return
 	}
 	
 	// Update fields
-	if updateData.Name != "" {
-		project.Name = updateData.Name
+	if name != "" {
+		project.Name = name
 	}
-	if updateData.Description != "" {
-		project.Description = updateData.Description
+	if description != "" {
+		project.Description = description
 	}
 	
 	// Save changes
 	err = h.projectService.UpdateProject(project)
 	if err != nil {
 		fmt.Printf("[%s] Error updating project %s: %v\n", traceID, id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"status": "error",
-			"error":  "Failed to update project",
+		c.HTML(http.StatusInternalServerError, "base", gin.H{
+			"title": "Update Project - Error",
+			"error": "Failed to update project",
 		})
 		return
 	}
 	
-	c.JSON(http.StatusOK, gin.H{
-		"status": "updated",
-		"id":     id,
-	})
+	c.Redirect(http.StatusSeeOther, "/projects/"+id)
 }
 
 // DeleteProject handles deletion of a project
 func (h *Handler) DeleteProject(c *gin.Context) {
 	traceID, _ := c.Get("traceID")
 	id := c.Param("id")
+	user := h.getCurrentUser(c)
 	
-	err := h.projectService.DeleteProject(id)
-	if err != nil {
-		fmt.Printf("[%s] Error deleting project %s: %v\n", traceID, id, err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"status": "error",
-			"error":  "Failed to delete project",
+	// Get project to verify ownership
+	project, err := h.projectService.GetProject(id)
+	if err == nil && project.UserID != user.ID {
+		fmt.Printf("[%s] Unauthorized delete attempt on project %s by user %s\n", traceID, id, user.ID)
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to delete this project",
 		})
 		return
 	}
 	
-	c.JSON(http.StatusOK, gin.H{
-		"status": "deleted",
-		"id":     id,
-	})
+	err = h.projectService.DeleteProject(id)
+	if err != nil {
+		fmt.Printf("[%s] Error deleting project %s: %v\n", traceID, id, err)
+		c.HTML(http.StatusInternalServerError, "base", gin.H{
+			"title": "Delete Project - Error",
+			"error": "Failed to delete project",
+		})
+		return
+	}
+	
+	c.Redirect(http.StatusSeeOther, "/projects")
 }
 
 // LoginPage renders the login page
 func (h *Handler) LoginPage(c *gin.Context) {
-	traceID, _ := c.Get("traceID")
-	fmt.Printf("[%s] Rendering login page\n", traceID)
-	
-	// Check if there's an error message to display (e.g., from a failed login)
-	errorMsg := c.Query("error")
-	
 	// Check if user is already authenticated
-	if user := h.getCurrentUser(c); user != nil {
-		fmt.Printf("[%s] User already authenticated, redirecting to home\n", traceID)
-		c.Redirect(http.StatusFound, "/")
+	user, _ := c.Get("user")
+	if user != nil {
+		// Redirect to home if already logged in
+		c.Redirect(http.StatusSeeOther, "/")
 		return
 	}
 	
-	// For a more deterministic rendering, use a dedicated auth template
-	// This avoids conflicts with the content template logic
+	// Check for error message from failed login
+	errorMsg := c.Query("error")
+	email := c.Query("email")
+	
+	// Render the login page with separate auth template for deterministic rendering
 	c.HTML(http.StatusOK, "auth.html", gin.H{
 		"title": "Login",
 		"error": errorMsg,
+		"email": email,
 	})
 }
 
 // Login processes the login attempt
 func (h *Handler) Login(c *gin.Context) {
 	traceID, _ := c.Get("traceID")
+	fmt.Printf("[%s] Processing login attempt\n", traceID)
 	
+	// Parse form data
 	email := c.PostForm("email")
 	password := c.PostForm("password")
-	rememberMe := c.PostForm("remember-me") == "on"
+	rememberMe := c.PostForm("remember-me") != ""
 	
-	// Basic form validation with traceability
-	if email == "" || password == "" {
-		fmt.Printf("[%s] Login attempt with missing credentials\n", traceID)
-		c.HTML(http.StatusBadRequest, "base", gin.H{
-			"title": "Login",
-			"error": "Email and password are required",
-			"email": email, // Return email for convenience
-		})
+	// Validate inputs
+	if strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
+		redirectURL := "/auth/login?error=Email and password are required"
+		if email != "" {
+			redirectURL += "&email=" + email
+		}
+		c.Redirect(http.StatusSeeOther, redirectURL)
 		return
 	}
 	
-	// Authenticate user
+	// Attempt authentication
 	user, err := h.authService.Authenticate(email, password)
+	
 	if err != nil {
 		fmt.Printf("[%s] Authentication failed for %s: %v\n", traceID, email, err)
-		c.HTML(http.StatusUnauthorized, "base", gin.H{
-			"title": "Login",
-			"error": "Invalid email or password",
-			"email": email, // Return email for convenience
-		})
+		var errorMsg string
+		
+		switch err {
+		case models.ErrUserNotFound:
+			errorMsg = "Invalid email or password"
+		case models.ErrInvalidCredentials:
+			errorMsg = "Invalid email or password"
+		default:
+			errorMsg = "Authentication failed"
+		}
+		
+		redirectURL := fmt.Sprintf("/auth/login?error=%s", errorMsg)
+		if email != "" {
+			redirectURL += "&email=" + email
+		}
+		c.Redirect(http.StatusSeeOther, redirectURL)
 		return
 	}
 	
 	// Generate session token
 	token, err := h.authService.GenerateSessionToken(user)
 	if err != nil {
-		fmt.Printf("[%s] Failed to generate session for %s: %v\n", traceID, user.ID, err)
-		c.HTML(http.StatusInternalServerError, "base", gin.H{
-			"title": "Error",
-			"error": "Failed to create session",
-		})
+		fmt.Printf("[%s] Failed to generate session token: %v\n", traceID, err)
+		c.Redirect(http.StatusSeeOther, "/auth/login?error=Session creation failed")
 		return
 	}
 	
 	// Set session cookie
-	// Calculate expiration time (24 hours or 30 days if remember-me is checked)
-	var maxAge int
+	secure := false // Set to true in production
+	httpOnly := true
+	
+	maxAge := 3600 // 1 hour
 	if rememberMe {
-		maxAge = 60 * 60 * 24 * 30 // 30 days
-		fmt.Printf("[%s] Setting long-lived session for %s (remember me)\n", traceID, user.ID)
-	} else {
-		maxAge = 60 * 60 * 24 // 24 hours
-		fmt.Printf("[%s] Setting standard session for %s\n", traceID, user.ID)
+		maxAge = 7 * 24 * 3600 // 7 days
 	}
 	
-	c.SetCookie(
-		"session_token",
-		token,
-		maxAge,
-		"/",
-		"",
-		false, // secure (should be true in production with HTTPS)
-		true,  // httpOnly
-	)
+	c.SetCookie("session", token, maxAge, "/", "", secure, httpOnly)
 	
-	fmt.Printf("[%s] Login successful for user: %s (%s)\n", traceID, user.ID, user.Email)
+	fmt.Printf("[%s] User %s (%s) authenticated successfully\n", traceID, user.Name, user.Email)
 	
-	// Check if there's a return_to cookie for redirection after login
-	returnTo, err := c.Cookie("return_to")
-	if err == nil && returnTo != "" {
-		// Clear the return_to cookie
-		c.SetCookie("return_to", "", -1, "/", "", false, true)
-		
-		// Validate the return URL (security measure to prevent open redirect)
-		if strings.HasPrefix(returnTo, "/") && !strings.Contains(returnTo, "://") {
-			fmt.Printf("[%s] Redirecting to: %s\n", traceID, returnTo)
-			c.Redirect(http.StatusSeeOther, returnTo)
-			return
-		}
-	}
-	
-	// Default redirect to home page
+	// Redirect to homepage or intended destination
 	c.Redirect(http.StatusSeeOther, "/")
 }
 
@@ -357,35 +340,37 @@ func (h *Handler) Login(c *gin.Context) {
 func (h *Handler) Logout(c *gin.Context) {
 	traceID, _ := c.Get("traceID")
 	
-	// Get the session token from cookie
-	sessionToken, err := c.Cookie("session_token")
-	if err == nil {
-		// Invalidate the session in the auth service
-		if err := h.authService.InvalidateSession(sessionToken); err != nil {
+	// Get session token from cookie
+	token, err := c.Cookie("session")
+	if err == nil && token != "" {
+		// Invalidate the session in auth service
+		err = h.authService.InvalidateSession(token)
+		if err != nil {
 			fmt.Printf("[%s] Error invalidating session: %v\n", traceID, err)
-			// Continue with logout even if invalidation fails
 		}
 	}
 	
 	// Clear the session cookie
-	c.SetCookie("session_token", "", -1, "/", "", false, true)
+	c.SetCookie("session", "", -1, "/", "", false, true)
 	
 	fmt.Printf("[%s] User logged out\n", traceID)
+	
+	// Redirect to login page
 	c.Redirect(http.StatusSeeOther, "/auth/login")
 }
 
 // Helper function to get current user from context
 func (h *Handler) getCurrentUser(c *gin.Context) *models.User {
-	user, exists := c.Get("user")
+	userValue, exists := c.Get("user")
 	if !exists {
+		// This should never happen with RequireAuth middleware, but handling it gracefully
+		traceID, _ := c.Get("traceID")
+		fmt.Printf("[%s] WARNING: getCurrentUser called but no user in context\n", traceID)
+		c.AbortWithStatus(http.StatusUnauthorized)
 		return nil
 	}
 	
-	if u, ok := user.(*models.User); ok {
-		return u
-	}
-	
-	return nil
+	return userValue.(*models.User)
 }
 
 // Feature-specific handlers
@@ -393,12 +378,24 @@ func (h *Handler) getCurrentUser(c *gin.Context) *models.User {
 // ArchitectureCanvas renders the architecture canvas page
 func (h *Handler) ArchitectureCanvas(c *gin.Context) {
 	id := c.Param("id")
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for architecture canvas: %v\n", traceID, id, err)
 		c.HTML(http.StatusNotFound, "base", gin.H{
 			"title": "Project Not Found",
 			"error": "The requested project could not be found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to view this project",
 		})
 		return
 	}
@@ -413,9 +410,12 @@ func (h *Handler) ArchitectureCanvas(c *gin.Context) {
 // StoryFlow renders the story flow board
 func (h *Handler) StoryFlow(c *gin.Context) {
 	id := c.Param("id")
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for story flow: %v\n", traceID, id, err)
 		c.HTML(http.StatusNotFound, "base", gin.H{
 			"title": "Project Not Found",
 			"error": "The requested project could not be found",
@@ -423,8 +423,17 @@ func (h *Handler) StoryFlow(c *gin.Context) {
 		return
 	}
 	
+	// Verify ownership
+	if project.UserID != user.ID {
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to view this project",
+		})
+		return
+	}
+	
 	c.HTML(http.StatusOK, "base", gin.H{
-		"title":       "Story Flow Board",
+		"title":       "Story Flow",
 		"projectID":   project.ID,
 		"projectName": project.Name,
 	})
@@ -433,9 +442,12 @@ func (h *Handler) StoryFlow(c *gin.Context) {
 // TaskHub renders the task monitoring page
 func (h *Handler) TaskHub(c *gin.Context) {
 	id := c.Param("id")
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for task hub: %v\n", traceID, id, err)
 		c.HTML(http.StatusNotFound, "base", gin.H{
 			"title": "Project Not Found",
 			"error": "The requested project could not be found",
@@ -443,8 +455,17 @@ func (h *Handler) TaskHub(c *gin.Context) {
 		return
 	}
 	
+	// Verify ownership
+	if project.UserID != user.ID {
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to view this project",
+		})
+		return
+	}
+	
 	c.HTML(http.StatusOK, "base", gin.H{
-		"title":       "Task Monitoring Hub",
+		"title":       "Task Hub",
 		"projectID":   project.ID,
 		"projectName": project.Name,
 	})
@@ -453,12 +474,24 @@ func (h *Handler) TaskHub(c *gin.Context) {
 // ReviewQueue renders the review queue page
 func (h *Handler) ReviewQueue(c *gin.Context) {
 	id := c.Param("id")
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for review queue: %v\n", traceID, id, err)
 		c.HTML(http.StatusNotFound, "base", gin.H{
 			"title": "Project Not Found",
 			"error": "The requested project could not be found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to view this project",
 		})
 		return
 	}
@@ -473,12 +506,24 @@ func (h *Handler) ReviewQueue(c *gin.Context) {
 // DesignAssistant renders the design assistant page
 func (h *Handler) DesignAssistant(c *gin.Context) {
 	id := c.Param("id")
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for design assistant: %v\n", traceID, id, err)
 		c.HTML(http.StatusNotFound, "base", gin.H{
 			"title": "Project Not Found",
 			"error": "The requested project could not be found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		c.HTML(http.StatusForbidden, "base", gin.H{
+			"title": "Unauthorized",
+			"error": "You do not have permission to view this project",
 		})
 		return
 	}
@@ -502,11 +547,12 @@ func (h *Handler) APIStatus(c *gin.Context) {
 
 // APIListProjects returns all projects for a user as JSON
 func (h *Handler) APIListProjects(c *gin.Context) {
-	// TODO: Get user ID from authenticated session
-	userID := "test-user" // Placeholder
+	user := h.getCurrentUser(c)
+	traceID, _ := c.Get("traceID")
 	
-	projects, err := h.projectService.ListProjects(userID)
+	projects, err := h.projectService.ListProjects(user.ID)
 	if err != nil {
+		fmt.Printf("[%s] Error listing projects for API: %v\n", traceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  "Failed to retrieve projects",
@@ -523,12 +569,25 @@ func (h *Handler) APIListProjects(c *gin.Context) {
 // APIGetProject returns a single project as JSON
 func (h *Handler) APIGetProject(c *gin.Context) {
 	id := c.Param("id")
+	user := h.getCurrentUser(c)
+	traceID, _ := c.Get("traceID")
 	
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for API: %v\n", traceID, id, err)
 		c.JSON(http.StatusNotFound, gin.H{
 			"status": "error",
 			"error":  "Project not found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		fmt.Printf("[%s] Unauthorized API access attempt for project %s by user %s\n", traceID, id, user.ID)
+		c.JSON(http.StatusForbidden, gin.H{
+			"status": "error",
+			"error":  "You do not have permission to access this project",
 		})
 		return
 	}
@@ -541,12 +600,16 @@ func (h *Handler) APIGetProject(c *gin.Context) {
 
 // APICreateProject creates a new project via API
 func (h *Handler) APICreateProject(c *gin.Context) {
+	user := h.getCurrentUser(c)
+	traceID, _ := c.Get("traceID")
+	
 	var projectData struct {
 		Name        string `json:"name" binding:"required"`
 		Description string `json:"description"`
 	}
 	
 	if err := c.BindJSON(&projectData); err != nil {
+		fmt.Printf("[%s] Invalid project data format: %v\n", traceID, err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"status": "error",
 			"error":  "Invalid data format",
@@ -554,13 +617,11 @@ func (h *Handler) APICreateProject(c *gin.Context) {
 		return
 	}
 	
-	// TODO: Get user ID from authenticated session
-	userID := "test-user" // Placeholder
-	
-	project := models.NewProject(projectData.Name, projectData.Description, userID)
+	project := models.NewProject(projectData.Name, projectData.Description, user.ID)
 	
 	err := h.projectService.CreateProject(project)
 	if err != nil {
+		fmt.Printf("[%s] Error creating project via API: %v\n", traceID, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  "Failed to create project",
@@ -577,13 +638,26 @@ func (h *Handler) APICreateProject(c *gin.Context) {
 // APIUpdateProject updates a project via API
 func (h *Handler) APIUpdateProject(c *gin.Context) {
 	id := c.Param("id")
+	user := h.getCurrentUser(c)
+	traceID, _ := c.Get("traceID")
 	
 	// Get existing project
 	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for API update: %v\n", traceID, id, err)
 		c.JSON(http.StatusNotFound, gin.H{
 			"status": "error",
 			"error":  "Project not found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		fmt.Printf("[%s] Unauthorized API update attempt for project %s by user %s\n", traceID, id, user.ID)
+		c.JSON(http.StatusForbidden, gin.H{
+			"status": "error",
+			"error":  "You do not have permission to update this project",
 		})
 		return
 	}
@@ -595,6 +669,7 @@ func (h *Handler) APIUpdateProject(c *gin.Context) {
 	}
 	
 	if err := c.BindJSON(&updateData); err != nil {
+		fmt.Printf("[%s] Invalid project update data: %v\n", traceID, err)
 		c.JSON(http.StatusBadRequest, gin.H{
 			"status": "error",
 			"error":  "Invalid data format",
@@ -613,6 +688,7 @@ func (h *Handler) APIUpdateProject(c *gin.Context) {
 	// Save changes
 	err = h.projectService.UpdateProject(project)
 	if err != nil {
+		fmt.Printf("[%s] Error updating project %s via API: %v\n", traceID, id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  "Failed to update project",
@@ -629,9 +705,33 @@ func (h *Handler) APIUpdateProject(c *gin.Context) {
 // APIDeleteProject deletes a project via API
 func (h *Handler) APIDeleteProject(c *gin.Context) {
 	id := c.Param("id")
+	user := h.getCurrentUser(c)
+	traceID, _ := c.Get("traceID")
 	
-	err := h.projectService.DeleteProject(id)
+	// Get project to verify ownership
+	project, err := h.projectService.GetProject(id)
 	if err != nil {
+		fmt.Printf("[%s] Error getting project %s for API delete: %v\n", traceID, id, err)
+		c.JSON(http.StatusNotFound, gin.H{
+			"status": "error",
+			"error":  "Project not found",
+		})
+		return
+	}
+	
+	// Verify ownership
+	if project.UserID != user.ID {
+		fmt.Printf("[%s] Unauthorized API delete attempt for project %s by user %s\n", traceID, id, user.ID)
+		c.JSON(http.StatusForbidden, gin.H{
+			"status": "error",
+			"error":  "You do not have permission to delete this project",
+		})
+		return
+	}
+	
+	err = h.projectService.DeleteProject(id)
+	if err != nil {
+		fmt.Printf("[%s] Error deleting project %s via API: %v\n", traceID, id, err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"status": "error",
 			"error":  "Failed to delete project",

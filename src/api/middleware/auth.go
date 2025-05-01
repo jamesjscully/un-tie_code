@@ -18,7 +18,7 @@ func SessionMiddleware(authService models.AuthService) gin.HandlerFunc {
 		fmt.Printf("[%s] SessionMiddleware: Checking session for path %s\n", traceID, path)
 		
 		// Get session token from cookie
-		sessionToken, err := c.Cookie("session_token")
+		sessionToken, err := c.Cookie("session")
 		if err != nil {
 			fmt.Printf("[%s] SessionMiddleware: No session token found for path %s: %v\n", traceID, path, err)
 			// No session token, continue as unauthenticated
@@ -34,7 +34,7 @@ func SessionMiddleware(authService models.AuthService) gin.HandlerFunc {
 		if err != nil {
 			fmt.Printf("[%s] SessionMiddleware: Invalid session for path %s: %v\n", traceID, path, err)
 			// Invalid session, clear cookie and continue as unauthenticated
-			c.SetCookie("session_token", "", -1, "/", "", false, true)
+			c.SetCookie("session", "", -1, "/", "", false, true)
 			c.Set("authenticated", false)
 			c.Next()
 			return
@@ -71,10 +71,7 @@ func RequireAuth() gin.HandlerFunc {
 			fmt.Printf("[%s] RequireAuth: Authentication required for path %s, redirecting to login\n", 
 				traceID, path)
 			
-			// Store the original URL for redirection after login
-			returnTo := c.Request.URL.String()
-			c.SetCookie("return_to", returnTo, 300, "/", "", false, true) // 5 minute expiry
-			
+			// Redirect to login page
 			c.Redirect(http.StatusFound, "/auth/login")
 			c.Abort()
 			return
