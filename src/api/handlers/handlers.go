@@ -66,8 +66,22 @@ func min(a, b int) int {
 
 // NewProjectForm renders the form for creating a new project
 func (h *Handler) NewProjectForm(c *gin.Context) {
+	// Get the current user for context - following the pattern of tracing and user context
+	traceID, _ := c.Get("traceID")
+	user := h.getCurrentUser(c)
+	
+	// Log the action for traceability
+	fmt.Printf("[%s] User %s accessing new project form\n", traceID, user.ID)
+	
+	// Render using deterministic templates
 	c.HTML(http.StatusOK, "base", gin.H{
 		"title": "Create New Project",
+		"page": "new_project",
+		// Add any default values or context needed for the form
+		"name": "",
+		"description": "",
+		// Enable tracing of which template is being rendered
+		"traceID": traceID,
 	})
 }
 

@@ -1,4 +1,4 @@
-{{ define "content" }}
+{{ define "new_project_content" }}
 <div class="bg-white shadow rounded-lg p-6">
     <div class="flex justify-between items-center mb-6">
         <h1 class="text-2xl font-bold text-gray-900">Create New Project</h1>
@@ -65,10 +65,10 @@
                     <label for="database" class="block text-sm font-medium text-gray-700">Database</label>
                     <div class="mt-1">
                         <select id="database" name="tech_stack_database" multiple class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" size="3">
-                            <option value="postgres">PostgreSQL</option>
+                            <option value="postgresql">PostgreSQL</option>
                             <option value="mysql">MySQL</option>
                             <option value="mongodb">MongoDB</option>
-                            <option value="redis">Redis</option>
+                            <option value="sqlite">SQLite</option>
                             <option value="firestore">Firestore</option>
                         </select>
                     </div>
@@ -79,10 +79,10 @@
                     <label for="hosting" class="block text-sm font-medium text-gray-700">Deployment</label>
                     <div class="mt-1">
                         <select id="hosting" name="tech_stack_hosting" multiple class="block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm" size="3">
-                            <option value="cloudrun" selected>Cloud Run</option>
-                            <option value="gke">GKE</option>
-                            <option value="appengine">App Engine</option>
-                            <option value="heroku">Heroku</option>
+                            <option value="gcp" selected>Google Cloud</option>
+                            <option value="aws">AWS</option>
+                            <option value="azure">Azure</option>
+                            <option value="netlify">Netlify</option>
                             <option value="vercel">Vercel</option>
                         </select>
                     </div>
